@@ -60,6 +60,7 @@ def daily(request, date):
 | `DJANGO_ALLOWED_HOSTS` | 可选 | 默认 `*` |
 | `REPORT_MAX_BODY_BYTES` | 可选 | 默认 `262144`(256KB) |
 | `REPORT_RATE_LIMIT` | 可选 | 默认 `30`(每来源 IP 每分钟) |
+| `DJANGO_ALLOW_MYSQL_57` | 可选 | 默认 `0`。⚠️ 逃生开关,只在不能换 MySQL 8.0 时打开,见 2.3 |
 
 > `REPORT_API_KEY` 与 `REPORT_ALLOWED_IPS` 都是**必需**的,这是刻意的 fail-closed:
 > 配置缺失时宁可写不进去,也不能放任意人写进来。忘了配的表现是上传一直返回 503,
@@ -76,7 +77,70 @@ def daily(request, date):
 `container.config.json` 里的 `executeSQLs` 只负责保证库存在,**刻意不在那里写
 `CREATE TABLE`** —— 那样 Django 迁移会因为「表已存在」而失败,直接把容器启动打断。
 
-### 2.3 端口
+### 2.3 ⚠️ 数据库版本:云托管默认给 5.7,而 Django 需要 8.0
+
+**这是部署时最容易踩的一个坑。** 症状是容器起不来,日志末尾:
+
+```
+django.db.utils.NotSupportedError: MySQL 8.0.11 or later is required (found 5.7.18).
+```
+
+原因有两个,缺一不可:
+
+- 微信云托管**模板一键部署开出来的 MySQL 默认是 5.7 版本**
+  ([官方文档](https://developers.weixin.qq.com/miniprogram/dev/wxcloudservice/wxcloudrun/src/guide/mysql/):「通过模板一键部署开通的环境,默认选择的是 MySQL 5.7 版本」);
+- **Django 从 4.2 起把 MySQL 最低版本提到 8.0.11**
+  ([ticket #33718](https://code.djangoproject.com/ticket/33718)),5.7 被正式放弃。
+
+#### 正解:换到 MySQL 8.0(推荐)
+
+云托管**支持 8.0**,但 **5.7 不能原地升级**,必须销毁后重新开通:
+
+1. 控制台 → **MySQL** → 页面右上角 **「销毁数据库」**
+2. 重新进入 MySQL 页面,在弹出的开通页里**选 8.0 版本**
+3. 8.0 开通时会让选**是否大小写敏感** —— **选定后不可修改**
+   (本项目表名 `reports` 全小写,两种都行,用默认值即可)
+4. 开通完成后,如果 `django_demo` 库不存在,建一次:
+   ```sql
+   CREATE DATABASE IF NOT EXISTS django_demo CHARACTER SET utf8mb4;
+   ```
+5. 若重设了数据库密码,同步更新服务的 `MYSQL_PASSWORD` 环境变量
+6. 重新部署
+
+> ⚠️ **「销毁数据库」不可逆,数据全部丢失。** 执行前确认这个 MySQL 实例上
+> 没有其他服务的数据。本项目此时是空库(服务从未成功启动过,一条记录都没写过),
+> 所以代价为零。
+
+> 💡 顺带一提:MySQL 5.7 自身也已在 **2023-10 停止支持**。换到 8.0 不只是为了迎合
+> Django,也是把一个 EOL 的数据库换掉。
+
+#### 退路:让 Django 接受 5.7(不推荐,但可用)
+
+如果确实不能销毁重建数据库,可以打开这个开关:
+
+```
+DJANGO_ALLOW_MYSQL_57=1
+```
+
+它会把 `DATABASES.default.ENGINE` 换成 `wxcloudrun.db_backend`,那是一个把
+`minimum_database_version` 从 `(8, 0, 11)` 降到 `(5, 7)` 的薄封装
+(见 `wxcloudrun/db_backend/base.py`)。**只改这一处门禁**,其余能力探测仍按真实
+版本号判断,8.0 专属特性会自动关闭。
+
+对本项目是安全的,因为这里只用到 MySQL 5.7 完全支持的 SQL:DATE 主键、
+VARCHAR/TEXT/MEDIUMTEXT、INT UNSIGNED、DATETIME(6) 与基础 CRUD。
+(具体核对过:Django 5.2 MySQL 后端没有任何 8.0 专有系统变量;批量插入在
+`< 8.0.19` 时会自动退回 `VALUES()` 老写法;`update_or_create` 用的是 5.7 支持的
+朴素 `SELECT ... FOR UPDATE`。)
+
+**但它仍然是妥协**:等于跑在 Django 明确不支持、也未测试过的组合上。
+不要在这个基础上继续加新特性,并且**尽早换到 8.0**。
+
+> 测试里有一条 `test_默认没有启用兼容后端` 专门守着这个开关不能变成默认值。
+> 另外**不要**用「把 Django 降回 4.1」来解决 —— 4.1 是最后一个支持 5.7 的版本,
+> 而它 2023-12 就已 EOL,等于用两个 EOL 组件换掉一个。
+
+### 2.4 端口
 
 容器监听 `80`,必须与控制台「服务设置」里的端口一致,否则部署失败。
 
@@ -295,8 +359,8 @@ DJANGO_SETTINGS_MODULE=wxcloudrun.settings_test .venv/bin/python manage.py test 
 DJANGO_SETTINGS_MODULE=wxcloudrun.settings .venv/bin/python manage.py check --deploy
 ```
 
-测试覆盖 107 项,包含全部拒绝路径(鉴权矩阵、体积、日期、内容审计、限流)、
-读路径的**字节一致性**断言、以及真实产物的误杀回归。
+测试覆盖 115 项,包含全部拒绝路径(鉴权矩阵、体积、日期、内容审计、限流)、
+数据库后端选择、读路径的**字节一致性**断言、以及真实产物的误杀回归。
 
 有 Docker 时可以直接构建镜像验证:
 
@@ -323,6 +387,7 @@ docker run --rm -p 8080:80 -e REPORT_API_KEY=k -e REPORT_ALLOWED_IPS=0.0.0.0/0 w
     ├── settings_test.py        测试专用:数据库换成内存 SQLite
     ├── security.py             全部安全逻辑(纯函数,可独立单测)
     ├── middleware.py           响应安全头 / CSP
+    ├── db_backend/             可选的 MySQL 5.7 兼容后端(默认不启用,见 2.3)
     ├── models.py               Report 模型(MediumTextField)
     ├── views.py                四个端点
     ├── urls.py                 路由
@@ -332,7 +397,8 @@ docker run --rm -p 8080:80 -e REPORT_API_KEY=k -e REPORT_ALLOWED_IPS=0.0.0.0/0 w
         ├── fixtures/daily-2026-09-22.html   真实产物,用于防误杀回归
         ├── test_security.py
         ├── test_report_api.py
-        └── test_daily.py
+        ├── test_daily.py
+        └── test_db_backend.py
 ```
 
 ## 7. 与上游模板的差异速查

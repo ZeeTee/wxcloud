@@ -15,6 +15,8 @@
 import os
 import secrets
 
+from .db_backend import engine_name
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -90,9 +92,16 @@ def _mysql_address() -> tuple[str, str]:
 
 _db_host, _db_port = _mysql_address()
 
+#: ⚠️ 逃生开关,默认关闭。
+#: 微信云托管**模板一键部署开出来的 MySQL 默认是 5.7**,而 Django 从 4.2 起要求
+#: 8.0.11+,于是容器会在启动时直接抛 NotSupportedError。
+#: **正解是换到 MySQL 8.0**(见 README「数据库」一节);
+#: 只有在无法销毁重建数据库时才打开这个开关,详情与风险见 wxcloudrun/db_backend/。
+_ALLOW_MYSQL_57 = _env_flag("DJANGO_ALLOW_MYSQL_57", "0")
+
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.mysql",
+        "ENGINE": engine_name(_ALLOW_MYSQL_57),
         "NAME": os.environ.get("MYSQL_DATABASE", "django_demo"),
         "USER": os.environ.get("MYSQL_USERNAME", ""),
         "PASSWORD": os.environ.get("MYSQL_PASSWORD", ""),
