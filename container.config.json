@@ -1,14 +1,19 @@
 {
-	// 本配置文件仅配合模板部署使用，为模板部署的服务生成「服务设置」的初始值。
+	// 本配置文件仅配合「模板部署」使用，为模板部署的服务生成「服务设置」的初始值。
 	// 模板部署结束后，后续服务发布与本配置文件完全无关，修改「服务设置」请到控制台操作。
 	// 复制模板代码自行开发请忽略本配置文件。
-	
-	"containerPort": 80,                           
-	"minNum": 0,                                  
-	"maxNum": 5,                                  
-	"cpu": 1,                                    
-	"mem": 2,                                    
-	"policyType": "cpu",                           
+
+	"containerPort": 80,
+
+	// 单副本即可：这是一个每天只写一次、读者偶尔访问的归档站。
+	// 放大副本数没有收益，反而会让应用内的限流计数分散到多个进程。
+	// minNum=0 允许缩容到零以省成本 ⚠️ 代价是读者首次访问要等一次冷启动。
+	"minNum": 0,
+	"maxNum": 1,
+
+	"cpu": 1,
+	"mem": 2,
+	"policyType": "cpu",
 	"policyThreshold": 60,
 	"policyDetails": [
 		{
@@ -20,13 +25,15 @@
 			"PolicyThreshold": 60
 		}
 	],
-	"envParams": {},                               
-	"customLogs": "stdout",                         
-	"initialDelaySeconds": 2,                       
-	"dataBaseName":"django_demo",
-	"executeSQLs":[
-		"CREATE DATABASE IF NOT EXISTS django_demo;",
-		"USE django_demo;",
-		"CREATE TABLE IF NOT EXISTS `Counters` (`id` int(11) NOT NULL AUTO_INCREMENT, `count` int(11) NOT NULL DEFAULT 1, `createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (`id`)) ENGINE = InnoDB DEFAULT CHARSET = utf8;"
-	]    
+	"envParams": {},
+	"customLogs": "stdout",
+	"initialDelaySeconds": 2,
+	"dataBaseName": "django_demo",
+
+	// 只需要保证库存在。**建表交给容器启动时的 `manage.py migrate`**，
+	// 不要在这里再写一份 CREATE TABLE —— 那样 Django 迁移会因为「表已存在」而失败，
+	// 直接把容器启动打断。
+	"executeSQLs": [
+		"CREATE DATABASE IF NOT EXISTS django_demo;"
+	]
 }

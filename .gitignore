@@ -1,0 +1,17 @@
+# 本地环境
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 本地实验用的数据库与日志
+db.sqlite3
+*.sqlite3
+logs/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store

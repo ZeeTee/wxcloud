@@ -1,38 +1,48 @@
-# 二开推荐阅读[如何提高项目构建效率](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html)
-# 选择构建用基础镜像（选择原则：在包含所有用到的依赖前提下尽可能体积小）。如需更换，请到[dockerhub官方仓库](https://hub.docker.com/_/python?tab=tags)自行选择后替换。
-# 已知alpine镜像与pytorch有兼容性问题会导致构建失败，如需使用pytorch请务必按需更换基础镜像。
-FROM alpine:3.13
+# 日报归档服务 —— 微信云托管镜像
+#
+# 相对官方模板的改动(每一处都有理由,不要无意中改回去):
+#
+#   1. 基础镜像 alpine:3.13 → python:3.12-alpine。
+#      Django 5.2 要求 Python ≥ 3.10,而 alpine:3.13 自带的是早已 EOL 的 Python 3.9。
+#      官方 python 镜像自带正确版本的 Python 与 pip,比 apk 装更可靠。
+#
+#   2. 先 COPY requirements.txt 再 COPY 代码,让"只改代码"时能复用依赖层,
+#      每次构建省下装依赖的时间。
+#
+#   3. 装 tzdata:设定 TIME_ZONE=Asia/Shanghai 后,Django 需要系统时区数据库,
+#      而 alpine 默认不带。
+#
+#   4. 启动前跑 migrate:容器是长驻的,启动即自愈,不必依赖控制台手工建表。
+#      (maxNum 已配成 1,不存在多副本并发迁移的问题。)
+#
+#   5. 用 gunicorn 而不是 `manage.py runserver` —— 后者是开发服务器。
+#
+# 如需临时退回开发服务器调试,把最后一行 CMD 换成:
+#   CMD ["python3", "manage.py", "runserver", "0.0.0.0:80"]
 
-# 容器默认时区为UTC，如需使用上海时间请启用以下时区设置命令
-# RUN apk add tzdata && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo Asia/Shanghai > /etc/timezone
+FROM python:3.12-alpine
 
-# 使用 HTTPS 协议访问容器云调用证书安装
-RUN apk add ca-certificates
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai
 
-# 选用国内镜像源以提高下载速度
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tencent.com/g' /etc/apk/repositories \
-&& apk add --update --no-cache python3 py3-pip \
-&& rm -rf /var/cache/apk/*
-
-# 拷贝当前项目到/app目录下(.dockerignore中文件除外)
-COPY . /app
-
-# 设定当前的工作目录
 WORKDIR /app
 
-# 安装依赖到指定的/install文件夹
-# 选用国内镜像源以提高下载速度
-RUN pip config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple \
-&& pip config set global.trusted-host mirrors.cloud.tencent.com \
-&& pip install --upgrade pip \
-# pip install scipy 等数学包失败，可使用 apk add py3-scipy 进行， 参考安装 https://pkgs.alpinelinux.org/packages?name=py3-scipy&branch=v3.13
-&& pip install --user -r requirements.txt
+# 时区数据库(见上面第 3 条)
+RUN apk add --no-cache tzdata
 
-# 暴露端口
-# 此处端口必须与「服务设置」-「流水线」以及「手动上传代码包」部署时填写的端口一致，否则会部署失败。
+# 依赖层:只有 requirements.txt 变了才需要重装
+COPY requirements.txt /app/requirements.txt
+RUN pip config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple \
+ && pip config set global.trusted-host mirrors.cloud.tencent.com \
+ && pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
+
+# 代码层
+COPY . /app
+
+# 必须与「服务设置」里的端口一致,否则部署失败
 EXPOSE 80
 
-# 执行启动命令
-# 写多行独立的CMD命令是错误写法！只有最后一行CMD命令会被执行，之前的都会被忽略，导致业务报错。
-# 请参考[Docker官方文档之CMD命令](https://docs.docker.com/engine/reference/builder/#cmd)
-CMD ["python3", "manage.py", "runserver", "0.0.0.0:80"]
+# migrate 加 --fake-initial:万一表是人工先建好的,迁移不会因"表已存在"而中断启动。
+CMD ["sh", "-c", "python3 manage.py migrate --noinput --fake-initial && exec gunicorn wxcloudrun.wsgi:application --bind 0.0.0.0:80 --workers 1 --threads 4 --timeout 30 --access-logfile - --error-logfile -"]

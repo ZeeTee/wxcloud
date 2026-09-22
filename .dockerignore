@@ -1,0 +1,27 @@
+# 本地开发产物,不进镜像
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 版本控制与编辑器
+.git/
+.gitignore
+.dockerignore
+.vscode/
+.idea/
+*.swp
+
+# 文档(镜像里不需要)
+README.md
+LICENSE
+*.md
+
+# 本地实验用的数据库与日志
+db.sqlite3
+*.sqlite3
+logs/
